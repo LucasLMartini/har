@@ -1,0 +1,120 @@
+---
+title: "Human Activity Recognition"
+author: "Lucas L. Martini"
+date: "January 31, 2016"
+output: html_document
+---
+
+### Introduction
+
+The aim of this project is to predict the manner in which people exercise, by analyzing data collected from sensors on the belt, forearm, arm and dumbell of 6 different participants.
+
+Researchers from PUC-Rio (<http://groupware.les.inf.puc-rio.br/har>) have collected this data and classified it in different classes ("classe" variable), denoting proper exercise and common mistakes when weight lifting.
+
+We were given the training and testing data from <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv> and <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>, respectively.
+These files are omitted from this repository.
+
+### Exploratory Data Analysis
+
+```{r cache=T}
+training <- read.csv("pml-training.csv", na.strings = c("","NA"," "))
+testing <- read.csv("pml-testing.csv", na.strings = c("","NA"," "))
+```
+
+```{r results='hide', cache=T}
+str(training)
+summary(training)
+```
+
+A quick exploration of the data with the commands above (output omitted), shows us that many columns have a substantial portion of missing data, also we have ~160 different variables, which might be too much to perform any decent regression in sane computational time, so we are going to trim the data down to contain only the columns relating to acceleration in the different sensors (columns containing the "accel" string).
+
+```{r cache=T}
+trimmedTraining <- training[grep("accel",names(training))]
+trimmedTraining$classe <- training$classe
+trimmedTesting <- testing[grep("accel",names(testing))]
+summary(trimmedTraining)
+```
+
+Another quick look at the dataset (now much more manageable) shows us that the columns starting with "var_accel" or "var_total_accel" seem to be populated with an enormous amount of NA values, let's get rid of those as well:
+
+```{r}
+trimmedTraining <- trimmedTraining[-grep("var_accel|var_total_accel",names(trimmedTraining))]
+trimmedTesting <- trimmedTesting[-grep("var_accel|var_total_accel",names(trimmedTesting))]
+```
+
+That gives us a nice, minimal and tidy dataset to begin our regression attempts.
+
+### Regression
+
+```{r warning=F, results='hide'}
+library(caret)
+library(rpart)
+library(gbm)
+```
+
+We will firstly divide the `trimmedTraining` set into a training and test sets for cross-validation:
+
+```{r}
+inTrain <- createDataPartition(y = trimmedTraining$classe,p = 0.7,list = F)
+training <- trimmedTraining[inTrain,]
+testing <- trimmedTraining[-inTrain,]
+```
+
+Now let's preprocess this training set utilizing PCA, to reduce the computational time necessary for model fitting:
+
+```{r}
+preProc <- preProcess(training[,-17],method="pca",thresh = 0.9)
+trainPC <- predict(preProc,training[,-17])
+testPC <- predict(preProc,testing[,-17])
+```
+
+Let's set some sane-level defaults for caret's `train()` function, that might reduce the CPU time required to test several models:
+
+```{r}
+fitControl <- trainControl(## 10-fold boot
+                           method = "boot",
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 3)
+```
+
+Now we will try to fit a CART model, using the preprocessed data, and test its accuracy:
+
+```{r cache=T}
+rPartMod <- train(training$classe~.,method="rpart",data=trainPC, trControl = fitControl)
+rPartMod$results
+```
+
+We can see the accuracy in the training set itself is too low, at only ~40%, so we can skip the cross-validation and proceed to try another model.
+
+Let's try using the gbm method:
+
+```{r cache=T, results='hide'}
+gbmMod <- train(training$classe~.,method="gbm",data=trainPC, trControl = fitControl)
+```
+
+```{r}
+gbmMod$results[9,]
+```
+
+The gbm method seems to have given us much better results, so let's try a prediction on our test set:
+
+```{r}
+c = confusionMatrix(testing$classe,predict(gbmMod,testPC))
+c$overall
+```
+
+At 47% accuracy, gbm still is not good enough. So let's try one final model using the random forests method:
+
+```{r cache=T, results='hide'}
+rfMod <- train(training$classe~.,method="rf",data=trainPC, trControl = fitControl)
+```
+```{r}
+rfMod$results[1,]
+c = confusionMatrix(testing$classe,predict(rfMod,testPC))
+c$overall
+```
+
+As we can see Random Forests has very high accuracy, even when we limit the number of bootstrapping repetitions, for cross-validation, to reduce computing time. Its downside is of course the time it takes to train with a considerable sample size.
+
+As we can see from the results above, our expected out-of-sample accuracy is around 86%. This final model will be the one used to predict the 20 different test cases in this assignment.
